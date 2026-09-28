@@ -163,6 +163,128 @@ def test_dotted_parameter_names_cannot_have_empty_components(name):
         validate({'nodl_version': 2, 'parameters': {name: {'type': 'double'}}})
 
 
+def _validate_parameter(definition: dict) -> None:
+    validate({'nodl_version': 2, 'parameters': {'p': definition}})
+
+
+@pytest.mark.parametrize(
+    'ptype,default',
+    [
+        ('double', 1),
+        ('double', float('nan')),
+        ('double_array', [1, 2.5]),
+        ('string_fixed_5', 'abcde'),
+        ('int_array_fixed_3', [1, 2]),
+        ('double_array_fixed_2', [1.0, 2.0]),
+        ('string_array_fixed_2', ['a']),
+        ('int_array', []),
+    ],
+)
+def test_default_value_matches_type(ptype, default):
+    _validate_parameter({'type': ptype, 'default_value': default})
+
+
+@pytest.mark.parametrize(
+    'ptype,default',
+    [
+        ('int', 1.5),
+        ('int', True),
+        ('double', True),
+        ('double', '1.0'),
+        ('bool', 1),
+        ('string', 3),
+        ('bool_array', True),
+        ('int_array', [1, 2.5]),
+        ('string_array', ['a', 1]),
+        ('string_fixed_3', 'abcd'),
+        ('int_array_fixed_2', [1, 2, 3]),
+        ('none', 'anything'),
+    ],
+)
+def test_default_value_mismatching_type_rejected(ptype, default):
+    with pytest.raises(ValidationError, match="parameter 'p': .*default_value"):
+        _validate_parameter({'type': ptype, 'default_value': default})
+
+
+@pytest.mark.parametrize(
+    'ptype,validation',
+    [
+        ('int', {'bounds<>': [0, 10]}),
+        ('double', {'bounds': [0, 1.5]}),
+        ('double', {'gt_eq<>': 0}),
+        ('int', {'one_of<>': [[1, 2, 3]]}),
+        ('string', {'one_of<>': [['a', 'b']]}),
+        ('bool', {'one_of<>': [[True]]}),
+        ('string', {'not_empty<>': None, 'size_lt<>': [10]}),
+        ('string_fixed_5', {'fixed_size<>': 5}),
+        ('bool_array', {'size_gt<>': [0]}),
+        ('string_array', {'unique<>': [], 'subset_of<>': [['x', 'y']]}),
+        ('double_array', {'element_bounds<>': [-1, 1.0]}),
+        ('int_array_fixed_3', {'lower_element_bounds<>': 0, 'upper_element_bounds<>': [5]}),
+        ('none', {'my_ns::custom': [1]}),
+        ('int', {'my_ns::custom': ['any', 'args']}),
+    ],
+)
+def test_validator_applies_to_type(ptype, validation):
+    _validate_parameter({'type': ptype, 'validation': validation})
+
+
+@pytest.mark.parametrize(
+    'ptype,validation',
+    [
+        ('string', {'bounds<>': [0, 10]}),
+        ('bool', {'gt<>': [0]}),
+        ('int_array', {'lt_eq': 3}),
+        ('int_array', {'one_of<>': [[1, 2]]}),
+        ('int', {'not_empty<>': None}),
+        ('double', {'size_lt<>': [3]}),
+        ('string', {'unique<>': None}),
+        ('int', {'subset_of<>': [[1, 2]]}),
+        ('string_array', {'element_bounds<>': [0, 1]}),
+        ('bool_array', {'lower_element_bounds': 0}),
+        ('double', {'element_bounds<>': [0, 1]}),
+        ('none', {'not_empty<>': None}),
+    ],
+)
+def test_validator_not_applying_to_type_rejected(ptype, validation):
+    with pytest.raises(ValidationError, match="parameter 'p': validator .* does not apply to type"):
+        _validate_parameter({'type': ptype, 'validation': validation})
+
+
+@pytest.mark.parametrize(
+    'ptype,validation',
+    [
+        ('int', {'bounds<>': [0, 0.5]}),
+        ('int', {'gt<>': 1.5}),
+        ('int', {'one_of<>': [[1, 'two']]}),
+        ('string', {'one_of<>': [['a', 1]]}),
+        ('bool', {'one_of<>': [[1]]}),
+        ('string_array', {'subset_of<>': [['a', 2]]}),
+        ('int_array', {'element_bounds<>': [0.5, 1]}),
+        ('int_array', {'upper_element_bounds<>': [2.5]}),
+    ],
+)
+def test_validator_argument_mismatching_type_rejected(ptype, validation):
+    with pytest.raises(ValidationError, match="parameter 'p': validator .* argument .* does not match type"):
+        _validate_parameter({'type': ptype, 'validation': validation})
+
+
+@pytest.mark.parametrize(
+    'ptype,validation',
+    [
+        ('double', {'bounds<>': [1.0, 0.0]}),
+        ('int_array', {'element_bounds': [5, 1]}),
+    ],
+)
+def test_validator_range_lower_above_upper_rejected(ptype, validation):
+    with pytest.raises(ValidationError, match='lower bound .* is greater than upper bound'):
+        _validate_parameter({'type': ptype, 'validation': validation})
+
+
+def test_validator_range_with_equal_bounds_accepted():
+    _validate_parameter({'type': 'int', 'validation': {'bounds<>': [3, 3]}})
+
+
 def test_publisher_minimal():
     validate({
         'nodl_version': 2,
