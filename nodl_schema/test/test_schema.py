@@ -2,14 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for NoDL schema loading and validation."""
 
+import importlib.resources as ir
 import io
 import json
 
 import pytest
+import yaml
 from jsonschema import ValidationError
 
 from nodl_schema import dump_nodl, parse_nodl, validate
 from nodl_schema.models import NodlDocument
+from nodl_schema.parameters import _VALIDATORS
 from nodl_schema.validation import load_schema
 
 _MIN_QOS = {'history': 'SYSTEM_DEFAULT', 'reliability': 'SYSTEM_DEFAULT'}
@@ -210,6 +213,7 @@ def test_default_value_mismatching_type_rejected(ptype, default):
     'ptype,validation',
     [
         ('int', {'bounds<>': [0, 10]}),
+        ('int', {'bounds<>': [3, 3]}),
         ('double', {'bounds': [0, 1.5]}),
         ('double', {'gt_eq<>': 0}),
         ('int', {'one_of<>': [[1, 2, 3]]}),
@@ -281,8 +285,10 @@ def test_validator_range_lower_above_upper_rejected(ptype, validation):
         _validate_parameter({'type': ptype, 'validation': validation})
 
 
-def test_validator_range_with_equal_bounds_accepted():
-    _validate_parameter({'type': 'int', 'validation': {'bounds<>': [3, 3]}})
+def test_semantic_validator_table_covers_schema_validators():
+    param_schema = yaml.safe_load((ir.files('nodl_schema') / 'schemas' / 'parameter.schema.yaml').read_text())
+    schema_names = {name.removesuffix('<>') for name in param_schema['definitions']['validation']['properties']}
+    assert set(_VALIDATORS) == schema_names
 
 
 def test_publisher_minimal():

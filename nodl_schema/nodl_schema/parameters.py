@@ -4,9 +4,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, NamedTuple
 
 
 def validate_parameter_names(parameters: Iterable[str]) -> str | None:
@@ -42,59 +41,111 @@ def find_parameter_namespace_conflict(names: Iterable[str]) -> tuple[str, str] |
     return None
 
 
-# Validators grouped by the parameter types they apply to.
-# Names are the base name, without the optional ``<>`` suffix.
-_NUMERIC_COMPARISON_VALIDATORS = frozenset({'bounds', 'lt', 'gt', 'lt_eq', 'gt_eq'})
-_SCALAR_VALIDATORS = frozenset({'one_of'})
-_SIZE_VALIDATORS = frozenset({'fixed_size', 'size_gt', 'size_lt', 'not_empty'})
-_ARRAY_VALIDATORS = frozenset({'unique', 'subset_of'})
-_NUMERIC_ARRAY_VALIDATORS = frozenset({'element_bounds', 'lower_element_bounds', 'upper_element_bounds'})
-_NUMERIC_BASE_TYPES = frozenset({'int', 'double', 'byte'})
-_RANGE_VALIDATORS = frozenset({'bounds', 'element_bounds'})
-
-
-@dataclass(frozen=True)
-class ParameterType:
+class ParameterType(NamedTuple):
     """A parameter ``type`` string split into its parts."""
 
     base: str
     is_array: bool
     fixed_size: int | None
 
-    @classmethod
-    def parse(cls, type_name: str) -> ParameterType:
-        """Parse a schema-valid parameter type, such as ``double_array_fixed_3``."""
-        name, fixed_size = type_name, None
-        if '_fixed_' in type_name:
-            name, size = type_name.rsplit('_fixed_', 1)
-            fixed_size = int(size)
-        base, is_array = (name.removesuffix('_array'), True) if name.endswith('_array') else (name, False)
-        return cls(base=base, is_array=is_array, fixed_size=fixed_size)
+    @property
+    def unfixed_name(self) -> str:
+        """The type name without its fixed size, such as ``int_array`` for ``int_array_fixed_3``."""
+        return f'{self.base}_array' if self.is_array else self.base
+
+
+def parse_parameter_type(type_name: str) -> ParameterType:
+    """Parse a schema-valid parameter type, such as ``double_array_fixed_3``."""
+    name, _, size = type_name.partition('_fixed_')
+    is_array = name.endswith('_array')
+    return ParameterType(
+        base=name.removesuffix('_array'),
+        is_array=is_array,
+        fixed_size=int(size) if size else None,
+    )
 
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+_BASE_TYPE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    'bool': lambda value: isinstance(value, bool),
+    'int': _is_int,
+    'double': lambda value: _is_int(value) or isinstance(value, float),
+    'string': lambda value: isinstance(value, str),
+    'byte': lambda value: _is_int(value) and 0 <= value <= 255,
+}
+
+
 def _matches_base_type(value: Any, base: str) -> bool:
-    """Return whether a single value is valid for a parameter base type."""
-    if base == 'bool':
-        return isinstance(value, bool)
-    if base == 'int':
-        return _is_int(value)
-    if base == 'double':
-        return _is_int(value) or isinstance(value, float)
-    if base == 'string':
-        return isinstance(value, str)
-    if base == 'byte':
-        return _is_int(value) and 0 <= value <= 255
-    return False
+    """Return whether a single value is valid for a parameter base type; ``none`` matches nothing."""
+    return _BASE_TYPE_CHECKS.get(base, lambda _: False)(value)
 
 
-def _check_default_value(type_name: str, default: Any) -> str | None:
+def _takes_value(t: ParameterType) -> bool:
+    return t.base != 'none'
+
+
+def _is_scalar(t: ParameterType) -> bool:
+    return _takes_value(t) and not t.is_array
+
+
+def _is_numeric_scalar(t: ParameterType) -> bool:
+    return t.base in {'int', 'double'} and not t.is_array
+
+
+def _is_sized(t: ParameterType) -> bool:
+    return t.is_array or t.base == 'string'
+
+
+def _is_numeric_array(t: ParameterType) -> bool:
+    return t.base in {'int', 'double', 'byte'} and t.is_array
+
+
+def _no_values(arguments: Any) -> list:
+    del arguments
+    return []
+
+
+def _as_list(arguments: Any) -> list:
+    return arguments if isinstance(arguments, list) else [arguments]
+
+
+def _first(arguments: list) -> list:
+    return arguments[0]
+
+
+class _Validator(NamedTuple):
+    applies_to: Callable[[ParameterType], bool]
+    # The values a validator compares the parameter (or its elements) against.
+    values: Callable[[Any], list]
+    is_range: bool = False
+
+
+# Built-in validators by base name (without the optional ``<>`` suffix).
+_VALIDATORS: dict[str, _Validator] = {
+    'bounds': _Validator(_is_numeric_scalar, _as_list, is_range=True),
+    'lt': _Validator(_is_numeric_scalar, _as_list),
+    'gt': _Validator(_is_numeric_scalar, _as_list),
+    'lt_eq': _Validator(_is_numeric_scalar, _as_list),
+    'gt_eq': _Validator(_is_numeric_scalar, _as_list),
+    'one_of': _Validator(_is_scalar, _first),
+    'fixed_size': _Validator(_is_sized, _no_values),
+    'size_gt': _Validator(_is_sized, _no_values),
+    'size_lt': _Validator(_is_sized, _no_values),
+    'not_empty': _Validator(_is_sized, _no_values),
+    'unique': _Validator(lambda t: t.is_array, _no_values),
+    'subset_of': _Validator(lambda t: t.is_array, _first),
+    'element_bounds': _Validator(_is_numeric_array, _as_list, is_range=True),
+    'lower_element_bounds': _Validator(_is_numeric_array, _as_list),
+    'upper_element_bounds': _Validator(_is_numeric_array, _as_list),
+}
+
+
+def _check_default_value(param_type: ParameterType, type_name: str, default: Any) -> str | None:
     """Check that a default value matches its declared parameter type."""
-    param_type = ParameterType.parse(type_name)
-    if param_type.base == 'none':
+    if not _takes_value(param_type):
         return f'type {type_name!r} does not take a default_value'
 
     if param_type.is_array:
@@ -112,52 +163,17 @@ def _check_default_value(type_name: str, default: Any) -> str | None:
     return None
 
 
-def _validator_applies(validator: str, param_type: ParameterType) -> bool:
-    """Return whether a built-in validator applies to a parameter type."""
-    if param_type.base == 'none':
-        return False
-    numeric = param_type.base in _NUMERIC_BASE_TYPES
-    if validator in _NUMERIC_COMPARISON_VALIDATORS:
-        return numeric and not param_type.is_array
-    if validator in _SCALAR_VALIDATORS:
-        return not param_type.is_array
-    if validator in _SIZE_VALIDATORS:
-        return param_type.is_array or param_type.base == 'string'
-    if validator in _ARRAY_VALIDATORS:
-        return param_type.is_array
-    if validator in _NUMERIC_ARRAY_VALIDATORS:
-        return numeric and param_type.is_array
-    return False
-
-
-def _as_list(arguments: Any) -> list:
-    if arguments is None:
-        return []
-    return arguments if isinstance(arguments, list) else [arguments]
-
-
-def _validator_values(validator: str, arguments: Any) -> list:
-    """Return the values a validator compares the parameter (or its elements) against."""
-    if validator in _SCALAR_VALIDATORS | _ARRAY_VALIDATORS:
-        return [value for group in _as_list(arguments) for value in group]
-    if validator in _NUMERIC_COMPARISON_VALIDATORS | _NUMERIC_ARRAY_VALIDATORS:
-        return _as_list(arguments)
-    # Size validators take lengths, not parameter values.
-    return []
-
-
-def _check_validator(type_name: str, validator_name: str, arguments: Any) -> str | None:
+def _check_validator(param_type: ParameterType, type_name: str, validator_name: str, arguments: Any) -> str | None:
     """Check that a built-in validator applies to the parameter type, with matching arguments."""
-    param_type = ParameterType.parse(type_name)
-    validator = validator_name.removesuffix('<>')
-    if not _validator_applies(validator, param_type):
+    validator = _VALIDATORS[validator_name.removesuffix('<>')]
+    if not validator.applies_to(param_type):
         return f'validator {validator_name!r} does not apply to type {type_name!r}'
 
-    for value in _validator_values(validator, arguments):
+    for value in validator.values(arguments):
         if not _matches_base_type(value, param_type.base):
             return f'validator {validator_name!r} argument {value!r} does not match type {type_name!r}'
 
-    if validator in _RANGE_VALIDATORS:
+    if validator.is_range:
         lower, upper = arguments
         if lower > upper:
             return f'validator {validator_name!r} lower bound {lower!r} is greater than upper bound {upper!r}'
@@ -165,34 +181,32 @@ def _check_validator(type_name: str, validator_name: str, arguments: Any) -> str
     return None
 
 
-def _is_custom_validator(validator_name: str) -> bool:
-    return '::' in validator_name
-
-
-def check_parameter_definition(definition: Mapping[str, Any]) -> str | None:
-    """Check one schema-valid parameter definition, returning an error message if it is invalid.
-
-    Covers what JSON Schema cannot express:
-    the ``default_value`` must match ``type``,
-    and each built-in validator must apply to ``type`` with arguments of the parameter's element type.
-    Custom (namespace-qualified) validators are not checked.
-    """
+def _check_parameter_definition(definition: Mapping[str, Any]) -> str | None:
     type_name = definition['type']
-    if 'default_value' in definition and (error := _check_default_value(type_name, definition['default_value'])):
+    param_type = parse_parameter_type(type_name)
+    if 'default_value' in definition and (
+        error := _check_default_value(param_type, type_name, definition['default_value'])
+    ):
         return error
 
     for validator_name, arguments in (definition.get('validation') or {}).items():
-        if _is_custom_validator(validator_name):
+        # Custom, namespace-qualified validators are not checked.
+        if '::' in validator_name:
             continue
-        if error := _check_validator(type_name, validator_name, arguments):
+        if error := _check_validator(param_type, type_name, validator_name, arguments):
             return error
 
     return None
 
 
 def validate_parameter_definitions(parameters: Mapping[str, Mapping[str, Any]]) -> str | None:
-    """Validate each parameter definition, returning an error message for the first invalid one."""
+    """Validate schema-valid parameter definitions, returning an error message for the first invalid one.
+
+    Covers what JSON Schema cannot express:
+    the ``default_value`` must match ``type``,
+    and each built-in validator must apply to ``type`` with arguments of the parameter's element type.
+    """
     for name, definition in parameters.items():
-        if error := check_parameter_definition(definition):
+        if error := _check_parameter_definition(definition):
             return f'parameter {name!r}: {error}'
     return None
