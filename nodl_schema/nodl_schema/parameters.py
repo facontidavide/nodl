@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from typing import Any, NamedTuple
 
 
@@ -122,14 +122,15 @@ class _Validator(NamedTuple):
     values: Callable[[Any], list]
     is_range: bool = False
     # Validators that may not be combined with this one on the same parameter.
-    excludes: frozenset[str] = frozenset()
+    excludes: tuple[str, ...] = ()
 
+
+_SCALAR_BOUNDS = ('lt', 'gt', 'lt_eq', 'gt_eq')
+_ELEMENT_BOUNDS = ('lower_element_bounds', 'upper_element_bounds')
 
 # Built-in validators by base name (without the optional ``<>`` suffix).
 _VALIDATORS: dict[str, _Validator] = {
-    'bounds': _Validator(
-        _is_numeric_scalar, _as_list, is_range=True, excludes=frozenset({'lt', 'gt', 'lt_eq', 'gt_eq'})
-    ),
+    'bounds': _Validator(_is_numeric_scalar, _as_list, is_range=True, excludes=_SCALAR_BOUNDS),
     'lt': _Validator(_is_numeric_scalar, _as_list),
     'gt': _Validator(_is_numeric_scalar, _as_list),
     'lt_eq': _Validator(_is_numeric_scalar, _as_list),
@@ -141,12 +142,7 @@ _VALIDATORS: dict[str, _Validator] = {
     'not_empty': _Validator(_is_sized, _no_values),
     'unique': _Validator(lambda t: t.is_array, _no_values),
     'subset_of': _Validator(lambda t: t.is_array, _first),
-    'element_bounds': _Validator(
-        _is_numeric_array,
-        _as_list,
-        is_range=True,
-        excludes=frozenset({'lower_element_bounds', 'upper_element_bounds'}),
-    ),
+    'element_bounds': _Validator(_is_numeric_array, _as_list, is_range=True, excludes=_ELEMENT_BOUNDS),
     'lower_element_bounds': _Validator(_is_numeric_array, _as_list),
     'upper_element_bounds': _Validator(_is_numeric_array, _as_list),
 }
@@ -172,9 +168,17 @@ def _check_default_value(param_type: ParameterType, type_name: str, default: Any
     return None
 
 
-def _check_validator(param_type: ParameterType, type_name: str, validator_name: str, arguments: Any) -> str | None:
+class _AuthoredValidator(NamedTuple):
+    """A built-in validator as written on a parameter."""
+
+    base: str
+    name: str
+    arguments: Any
+
+
+def _check_validator(param_type: ParameterType, type_name: str, authored: _AuthoredValidator) -> str | None:
     """Check that a built-in validator applies to the parameter type, with matching arguments."""
-    validator = _VALIDATORS[validator_name.removesuffix('<>')]
+    validator, validator_name, arguments = _VALIDATORS[authored.base], authored.name, authored.arguments
     if not validator.applies_to(param_type):
         return f'validator {validator_name!r} does not apply to type {type_name!r}'
 
@@ -190,13 +194,12 @@ def _check_validator(param_type: ParameterType, type_name: str, validator_name: 
     return None
 
 
-def _check_validator_combinations(validator_names: Iterable[str]) -> str | None:
+def _check_validator_combinations(validators: Collection[_AuthoredValidator]) -> str | None:
     """Check that no two built-in validators on one parameter exclude each other."""
-    names_by_base = {name.removesuffix('<>'): name for name in validator_names}
-    for base, name in names_by_base.items():
-        conflicts = sorted(_VALIDATORS[base].excludes & names_by_base.keys())
-        if conflicts:
-            return f'validator {name!r} cannot be combined with {names_by_base[conflicts[0]]!r}'
+    for validator in validators:
+        for other in validators:
+            if other.base in _VALIDATORS[validator.base].excludes:
+                return f'validator {validator.name!r} cannot be combined with {other.name!r}'
     return None
 
 
@@ -209,9 +212,13 @@ def _check_parameter_definition(definition: Mapping[str, Any]) -> str | None:
         return error
 
     # Custom, namespace-qualified validators are not checked.
-    validators = {name: args for name, args in (definition.get('validation') or {}).items() if '::' not in name}
-    for validator_name, arguments in validators.items():
-        if error := _check_validator(param_type, type_name, validator_name, arguments):
+    validators = [
+        _AuthoredValidator(name.removesuffix('<>'), name, arguments)
+        for name, arguments in (definition.get('validation') or {}).items()
+        if '::' not in name
+    ]
+    for validator in validators:
+        if error := _check_validator(param_type, type_name, validator):
             return error
 
     return _check_validator_combinations(validators)
@@ -220,7 +227,7 @@ def _check_parameter_definition(definition: Mapping[str, Any]) -> str | None:
 def validate_parameter_definitions(parameters: Mapping[str, Mapping[str, Any]]) -> str | None:
     """Validate schema-valid parameter definitions, returning an error message for the first invalid one.
 
-    Covers what JSON Schema cannot express:
+    These are the semantic checks kept out of the JSON Schema:
     the ``default_value`` must match ``type``,
     each built-in validator must apply to ``type`` with arguments of the parameter's element type,
     and no two built-in validators may exclude each other, such as ``bounds`` with ``lt``.

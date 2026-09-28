@@ -318,6 +318,7 @@ def test_semantic_validator_table_covers_schema_validators():
     param_schema = yaml.safe_load((ir.files('nodl_schema') / 'schemas' / 'parameter.schema.yaml').read_text())
     schema_names = {name.removesuffix('<>') for name in param_schema['definitions']['validation']['properties']}
     assert set(_VALIDATORS) == schema_names
+    assert {excluded for validator in _VALIDATORS.values() for excluded in validator.excludes} <= schema_names
 
 
 def test_publisher_minimal():
