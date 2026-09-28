@@ -62,6 +62,8 @@ Each built-in validator must apply to the parameter `type`:
 
 Values passed to a validator (bounds, `one_of` options, `subset_of` members) must match the parameter's element type,
 and a lower bound may not exceed its upper bound.
+`bounds` cannot be combined with `lt`, `gt`, `lt_eq`, or `gt_eq`,
+and `element_bounds` cannot be combined with `lower_element_bounds` or `upper_element_bounds`.
 Custom, namespace-qualified validators are not checked.
 
 ```{eval-rst}

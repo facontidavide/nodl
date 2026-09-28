@@ -285,6 +285,35 @@ def test_validator_range_lower_above_upper_rejected(ptype, validation):
         _validate_parameter({'type': ptype, 'validation': validation})
 
 
+@pytest.mark.parametrize(
+    'ptype,validation',
+    [
+        ('int', {'bounds<>': [0, 10], 'lt<>': 5}),
+        ('double', {'gt_eq': 0.0, 'bounds': [0.0, 1.0]}),
+        ('double', {'bounds<>': [0.0, 1.0], 'lt_eq': 1.0}),
+        ('int_array', {'element_bounds<>': [0, 10], 'lower_element_bounds<>': 0}),
+        ('double_array', {'upper_element_bounds': 1.0, 'element_bounds': [0.0, 1.0]}),
+    ],
+)
+def test_exclusive_validators_combined_rejected(ptype, validation):
+    with pytest.raises(ValidationError, match="parameter 'p': validator .* cannot be combined with"):
+        _validate_parameter({'type': ptype, 'validation': validation})
+
+
+@pytest.mark.parametrize(
+    'ptype,validation',
+    [
+        ('int', {'gt<>': 0, 'lt<>': 10}),
+        ('double', {'bounds<>': [0.0, 1.0], 'one_of<>': [[0.0, 1.0]]}),
+        ('int_array', {'lower_element_bounds<>': 0, 'upper_element_bounds<>': 10}),
+        ('int_array', {'element_bounds<>': [0, 10], 'unique<>': None}),
+        ('int', {'bounds<>': [0, 10], 'my_ns::lt': 5}),
+    ],
+)
+def test_compatible_validators_combined_accepted(ptype, validation):
+    _validate_parameter({'type': ptype, 'validation': validation})
+
+
 def test_semantic_validator_table_covers_schema_validators():
     param_schema = yaml.safe_load((ir.files('nodl_schema') / 'schemas' / 'parameter.schema.yaml').read_text())
     schema_names = {name.removesuffix('<>') for name in param_schema['definitions']['validation']['properties']}
